@@ -381,6 +381,10 @@ class VatCalculator
      * @var string
      */
     protected $businessCountryCode;
+    /**
+     * @var string
+     */
+    protected $businessVatNumber;
 
     /**
      * @var string
@@ -398,6 +402,13 @@ class VatCalculator
         if (isset($this->config) && $this->config->has($businessCountryKey)) {
             $this->setBusinessCountryCode($this->config->get($businessCountryKey, ''));
         }
+
+        $businessVatNumberKey = 'vat_calculator.business_vat_number';
+        if (isset($this->config) && $this->config->has($businessVatNumberKey)) {
+            $this->setBusinessVatNumber($this->config->get($businessVatNumberKey, null));
+        }
+
+
     }
 
     /**
@@ -593,6 +604,14 @@ class VatCalculator
     }
 
     /**
+     * @param string $businessVatNumber
+     */
+    public function setBusinessVatNumber($businessVatNumber)
+    {
+        $this->businessVatNumber = $businessVatNumber;
+    }
+
+    /**
      * Returns the tax rate for the given country code.
      * This method is used to allow backwards compatibility.
      *
@@ -677,12 +696,13 @@ class VatCalculator
 
     /**
      * @param $vatNumber
+     * @param $requesterVatNumber
      *
      * @throws VATCheckUnavailableException
      *
      * @return object|false
      */
-    public function getVATDetails($vatNumber)
+    public function getVATDetails($vatNumber, $requesterVatNumber = null)
     {
         $vatNumber = str_replace([' ', "\xC2\xA0", "\xA0", '-', '.', ','], '', trim($vatNumber));
         $countryCode = substr($vatNumber, 0, 2);
@@ -711,10 +731,30 @@ class VatCalculator
 
             if ($client) {
                 try {
-                    return $client->checkVat([
-                        'countryCode' => $countryCode,
-                        'vatNumber' => $vatNumber,
-                    ]);
+                    // include requester information when provided
+                    $requesterVatNumber = $requesterVatNumber ?: $this->businessVatNumber;
+                    if(!is_null($requesterVatNumber)) {
+                        $requesterVatNumber = str_replace([' ', "\xC2\xA0", "\xA0", '-', '.', ','], '', trim($requesterVatNumber));
+                        $viesResponse = $client->checkVatApprox([
+                            'countryCode' => $countryCode,
+                            'vatNumber' => $vatNumber,
+                            'requesterCountryCode' => substr($requesterVatNumber, 0, 2),
+                            'requesterVatNumber' => substr ($requesterVatNumber, 2)
+                        ]);
+                        $viesResponse->requesterCountryCode = substr($requesterVatNumber, 0, 2);
+                        $viesResponse->requesterVatNumber = substr ($requesterVatNumber, 2);
+                    } else {
+                        $viesResponse = $client->checkVatApprox([
+                            'countryCode' => $countryCode,
+                            'vatNumber' => $vatNumber,
+                        ]);
+                    }
+
+                    // Ensure backwards compatibility with $client->checkVat() call
+                    if(property_exists($viesResponse, 'traderName')) $viesResponse->name = $viesResponse->traderName;
+                    if(property_exists($viesResponse, 'traderAddress')) $viesResponse->address = $viesResponse->traderAddress;
+
+                    return $viesResponse;
                 } catch (SoapFault $e) {
                     if (isset($this->config) && $this->config->get('vat_calculator.forward_soap_faults')) {
                         throw new VATCheckUnavailableException($e->getMessage(), $e->getCode(), $e->getPrevious());
